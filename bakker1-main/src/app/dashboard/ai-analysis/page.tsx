@@ -51,7 +51,7 @@ const sortedSymptoms = [...new Set(allSymptoms)].sort();
 interface DiagnosisResult {
   disease: string;
   confidence: number;
-  confidenceLevel: string;
+  confidence_level: string;
 }
 
 export default function AIAnalysisPage() {
@@ -62,7 +62,7 @@ export default function AIAnalysisPage() {
   const [selectedSymptoms, setSelectedSymptoms] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   // تعديل المنفذ الافتراضي ليطابق خادم Flask
-  const [serverIP, setServerIP] = useState("192.168.1.39:5021"); 
+  const [serverIP, setServerIP] = useState("192.168.100.100:5021"); 
   const [diagnosisResults, setDiagnosisResults] = useState<DiagnosisResult[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -95,7 +95,30 @@ export default function AIAnalysisPage() {
     );
   };
   
-  // إجراء التشخيص مع تحسين التعامل مع الأخطاء
+  // اختبار الاتصال بالخادم - محدّث
+  const testConnection = async () => {
+    try {
+      setErrorMessage(null); // مسح رسائل الخطأ السابقة
+      console.log(`محاولة الاتصال بـ: http://${serverIP}/health`);
+      
+      const response = await fetch(`http://${serverIP}/health`, {
+        method: 'GET',
+        mode: 'cors'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setErrorMessage(`تم الاتصال بالخادم بنجاح! الحالة: ${data.status}, النموذج محمل: ${data.model_loaded ? 'نعم' : 'لا'}`);
+      } else {
+        setErrorMessage(`فشل الاتصال بالخادم. الاستجابة: ${response.status}`);
+      }
+    } catch (error) {
+      console.error("خطأ اختبار الاتصال:", error);
+      setErrorMessage(`فشل في اختبار الاتصال: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
+    }
+  };
+  
+  // إجراء التشخيص - محدّث
   const performDiagnosis = async () => {
     if (selectedSymptoms.length === 0) {
       setErrorMessage("الرجاء اختيار الأعراض أولاً");
@@ -106,36 +129,26 @@ export default function AIAnalysisPage() {
     setErrorMessage(null);
     
     try {
-      // بناء عنوان الـ API مع استخدام IP المدخل
       const apiUrl = `http://${serverIP}/api/diagnose`;
       console.log(`محاولة الاتصال بـ: ${apiUrl}`);
       
-      // تحويل الأعراض المختارة إلى نص مفصول بفواصل
-      const symptomsText = selectedSymptoms.join(", ");
-      
-      // طباعة البيانات المرسلة للتصحيح
-      const requestData = { 
-        symptoms: symptomsText,
-        auto_use_suggestions: true 
-      };
+      // إرسال الأعراض كقائمة
+      const requestData = { symptoms: selectedSymptoms };
       console.log("البيانات المرسلة:", requestData);
       
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Access-Control-Allow-Origin': '*',
+          'Accept': 'application/json'
         },
         mode: 'cors',
         body: JSON.stringify(requestData),
       });
       
-      // طباعة حالة الاستجابة للتصحيح
       console.log(`حالة الاستجابة: ${response.status} ${response.statusText}`);
       
       if (!response.ok) {
-        // محاولة قراءة النص قبل محاولة تحليل JSON
         const textResponse = await response.text();
         console.log("استجابة النص:", textResponse);
         
@@ -143,67 +156,35 @@ export default function AIAnalysisPage() {
         try {
           errorData = JSON.parse(textResponse);
         } catch {
-          // إذا فشل تحليل JSON، استخدم النص كما هو
           throw new Error(textResponse || `خطأ: ${response.status}`);
         }
         
-        throw new Error(errorData.message || 'حدث خطأ في التشخيص');
+        throw new Error(errorData.error || 'حدث خطأ في التشخيص');
       }
       
-      const textResponse = await response.text();
-      console.log("استجابة النص الخام:", textResponse);
-      
-      let data;
-      try {
-        data = JSON.parse(textResponse);
-      } catch {
-        throw new Error("فشل في تحليل استجابة JSON");
-      }
-      
+      const data = await response.json();
       console.log("البيانات المستلمة:", data);
       
-      // تنسيق النتائج للعرض
-      interface RawDiagnosisResult {
-        disease: string;
-        confidence: number;
-        confidence_level: string;
-      }
-      const formattedResults = (data.results as RawDiagnosisResult[]).map((result) => ({
-        disease: result.disease,
-        confidence: result.confidence,
-        confidenceLevel: result.confidence_level
-      }));
-      
-      setDiagnosisResults(formattedResults);
+      setDiagnosisResults(data.results);
       
       // حفظ نتائج التشخيص في Firestore
-      if (userId && formattedResults.length > 0) {
+      if (userId && data.results && data.results.length > 0) {
         await addDoc(collection(db, "exams"), {
           userId,
           date: serverTimestamp(),
           symptoms: selectedSymptoms,
-          results: formattedResults,
+          results: data.results,
         });
         console.log("تم حفظ نتائج التشخيص بنجاح");
       }
       
-    } catch (error: unknown) {
+    } catch (error) {
       console.error("خطأ في التشخيص:", error);
       
-      // تحسين التعامل مع أخطاء الاتصال
       if (error instanceof TypeError && error.message.includes('fetch')) {
         setErrorMessage(`خطأ في الاتصال بالخادم. تأكد من أن الخادم يعمل على العنوان: ${serverIP}`);
       } else {
-        let message = 'خطأ غير معروف';
-        if (
-          error &&
-          typeof error === 'object' &&
-          'message' in error &&
-          typeof (error as { message?: unknown }).message === 'string'
-        ) {
-          message = (error as { message: string }).message;
-        }
-        setErrorMessage(`حدث خطأ أثناء التشخيص: ${message}`);
+        setErrorMessage(`حدث خطأ أثناء التشخيص: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
       }
     } finally {
       setDiagnosing(false);
@@ -218,21 +199,6 @@ export default function AIAnalysisPage() {
   // الانتقال لصفحة الفحوصات السابقة
   const goToPreviousExams = () => {
     router.push("/dashboard/previous-exams");
-  };
-  
-  // اختبار الاتصال بالخادم
-  const testConnection = async () => {
-    try {
-      const response = await fetch(`http://${serverIP}/`);
-      if (response.ok) {
-        setErrorMessage(`تم الاتصال بالخادم بنجاح! الاستجابة: ${response.status}`);
-      } else {
-        setErrorMessage(`فشل الاتصال بالخادم. الاستجابة: ${response.status}`);
-      }
-    } catch (error) {
-      console.error("خطأ اختبار الاتصال:", error);
-      setErrorMessage(`فشل في اختبار الاتصال: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
-    }
   };
   
   // تصفية الأعراض بناءً على مصطلح البحث
@@ -460,8 +426,8 @@ export default function AIAnalysisPage() {
                     <div className="flex items-center justify-center">
                       <div 
                         className={`w-3 h-3 rounded-full mr-2 ${
-                          diagnosisResults[0].confidenceLevel === 'high' ? 'bg-emerald-500' : 
-                          diagnosisResults[0].confidenceLevel === 'medium' ? 'bg-yellow-500' : 'bg-red-500'
+                          diagnosisResults[0].confidence_level === 'high' ? 'bg-emerald-500' : 
+                          diagnosisResults[0].confidence_level === 'medium' ? 'bg-yellow-500' : 'bg-red-500'
                         }`}
                       ></div>
                       <span className="text-sm text-gray-600">
@@ -484,8 +450,8 @@ export default function AIAnalysisPage() {
                           <div className="flex items-center">
                             <div 
                               className={`w-2 h-2 rounded-full mr-2 ${
-                                result.confidenceLevel === 'high' ? 'bg-emerald-500' : 
-                                result.confidenceLevel === 'medium' ? 'bg-yellow-500' : 'bg-red-500'
+                                result.confidence_level === 'high' ? 'bg-emerald-500' : 
+                                result.confidence_level === 'medium' ? 'bg-yellow-500' : 'bg-red-500'
                               }`}
                             ></div>
                             <span className="text-sm text-gray-500">
